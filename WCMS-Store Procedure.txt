@@ -1,0 +1,1529 @@
+
+
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[MyLogisticsTest]    Script Date: 3/11/2019 8:49:45 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[MyLogisticsTest]
+ @date varchar(50),
+ @model varchar(50)
+
+AS
+
+
+BEGIN
+
+IF (@model IS Null  AND @date IS NOT NULL)
+
+BEGIN
+
+
+SELECT imei.Model,imei.Color, COUNT(logs.Imei1)ProductionCount  FROM tblIMEIRecord imei 
+
+Left join tblLogistics logs on imei.IMEI1=logs.Imei1 and imei.IMEI2=logs.Imei2   
+
+WHERE        (CONVERT(date,logs.AddedDate) =@date) --'2018-08-16')
+
+GROUP BY imei.Model,imei.Color
+
+END 
+
+
+IF (@model IS NOT Null  AND @date IS NOT NULL)
+
+BEGIN
+SELECT * FROM tblIMEIRecord where Model =@model -- 'Primo GH7i'  
+and  tblIMEIRecord.IMEI1 in(select Imei1 from tblLogistics WHERE  CONVERT(date,AddedDate) = @date)
+END
+
+END
+--SELECT * FROM tblIMEIRecord
+--	WHERE  EXISTS 
+--    (SELECT * 
+--     FROM tblLogistics
+--     WHERE tblIMEIRecord.IMEI1 = tblLogistics.Imei1 AND tblIMEIRecord.Model='Primo GH7i' AND CONVERT(date,AddedDate) = '2018-08-16' )
+
+//////////////////////////////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[PackagingMerge]    Script Date: 3/11/2019 8:51:22 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER Procedure [dbo].[PackagingMerge]
+ @mobilecode varchar(50),
+ @imei varchar(50),
+ @station varchar(50),
+ @packby bigint,
+ @packline bigint,
+ @result bit OUT ,
+  @rcode bigint OUT  
+ --@message varchar(200) OUT
+
+ AS
+
+ BEGIN
+
+ DECLARE @IMEI1 varchar(50),
+         @IMEI2 varchar(50)
+
+ SET NOCOUNT ON;  
+
+ SELECT @IMEI1 = IMEI1 FROM tblImeiRecord WHERE IMEI1= @imei OR IMEI2= @imei		   				      
+ SELECT @IMEI2 = IMEI2 FROM tblImeiRecord WHERE IMEI1= @imei OR IMEI2= @imei	
+
+ IF (@IMEI1 IS NULL)
+ BEGIN
+ --SET @message ='No Imei Found' 
+ SET @rcode=1
+ SET @result=0 
+ END
+
+ ELSE
+
+ BEGIN
+ IF NOT EXISTS(SELECT * FROM ProductionMaster WHERE MobileCode= @mobilecode)
+ BEGIN 
+ --SET @message ='No Code Found Found' 
+  SET @rcode=2
+ SET @result=0 
+ END
+
+ ELSE
+ BEGIN
+ UPDATE ProductionMaster
+SET Imei1 = @IMEI1,
+--(SELECT IMEI1
+--               FROM tblImeiRecord
+--               WHERE IMEI1= @imei OR IMEI2= @imei),
+    Imei2=@IMEI2,
+	--(SELECT IMEI2
+ --              FROM tblImeiRecord
+ --              WHERE IMEI1= @imei OR IMEI2= @imei),
+	--		   QcStation=@station,
+	--		   PackagingBy=@packby,
+	--		   PackagingLineId=@packline,
+	--		   PackagingAD=GETDATE()
+	QcStation=@station,
+	PackagingBy=@packby,
+	PackagingLineId=@packline,
+	PackagingAD=GETDATE()
+
+WHERE MobileCode=@mobilecode
+
+ --SET @message ='Success' 
+ SET @result=1 
+ SET @rcode=3
+
+ END
+
+ END
+ END 
+
+
+
+ PRINT(GETDATE())
+
+//////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SP]    Script Date: 3/11/2019 8:51:47 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[SP] 
+AS
+
+BEGIN
+DECLARE @result nvarchar(max) 
+
+DECLARE @columns NVARCHAR(MAX), @sql NVARCHAR(MAX)--- @dd nvarchar(50);
+SET @columns = N'';
+--set @dd = '2018-10-17';
+SELECT @columns += N', p.' + QUOTENAME(Line_Project)
+  FROM (
+  select pl.LineName + '-' + convert(nvarchar, tr.ProjectId) as Line_Project
+	from [WCMS].[dbo].[tblRework] tr
+	join tblProductionLine pl
+	on tr.LineId=pl.LineId
+	cross apply (select Data from [WCMS].dbo.Split(tr.Issues,','))x
+	where convert(date, tr.AddedDate) = '2018-10-17'--tr.MobileCode = 'MP4400000003589'
+	group by pl.LineName, tr.ProjectId
+  ) AS x;
+
+
+SET @sql = N'
+SELECT IssueName,FailedStation, ' + STUFF(@columns, 1, 2, '') + '
+FROM
+(
+ select pl.LineName' + '+''-''+' + 'convert(nvarchar, tr.ProjectId) as Line_Project, LTRIM(RTRIM(x.Data)) as IssueName,tr.FailedStation as FailedStation, count(x.Data) IssueCount
+	from [WCMS].[dbo].[tblRework] tr
+	join tblProductionLine pl
+	on tr.LineId=pl.LineId
+	cross apply (select Data from [WCMS].dbo.Split(tr.Issues,'+''','''+'))x
+	where convert(date, tr.AddedDate) =''2018-10-17''
+	group by tr.ProjectId , tr.LineId, pl.LineName,x.Data,tr.FailedStation
+) AS j
+PIVOT
+(
+  SUM(IssueCount) FOR Line_Project IN ('
+  + STUFF(REPLACE(@columns, ', p.[', ',['), 1, 1, '')
+  + ')
+) AS p;';
+
+
+  
+  SET @result=@sql;
+  EXEC(@result);
+
+
+END 
+//////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPAssemblylineProductionStatus]    Script Date: 3/11/2019 8:52:23 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SPAssemblylineProductionStatus]
+ @projectId bigint,
+ @fromdate varchar(50),
+ @todate varchar(50)
+
+AS
+BEGIN
+
+IF (@projectId IS  Null  AND @fromdate IS NOT NULL AND @todate IS NOT NULL)
+begin
+SELECT dailyIssue.ProjectId, dailyIssue.ProjectName, dailyIssue.LineId,tblProductionLine.LineName, CONVERT(DATE, dailyIssue.AddedDate) AS Date, COUNT(dailyIssue.Id) AS IssuedInLine,
+(SELECT COUNT(1) FROM WCMS.dbo.tblScrew WHERE CONVERT(DATE, AddedDate) = CONVERT(DATE, dailyIssue.AddedDate) AND ProjectId = dailyIssue.ProjectId AND LineId = dailyIssue.LineId) AS ScrewDone,
+(SELECT COUNT(1) FROM WCMS.dbo.ProductionMaster WHERE CONVERT(DATE, FunctionalAD) = CONVERT(DATE, dailyIssue.AddedDate) AND ProjectId = dailyIssue.ProjectId AND LineId = dailyIssue.LineId) AS TotalQcChecked,
+(SELECT COUNT(1) FROM WCMS.dbo.ProductionMaster pMaster where pMaster.ProjectId = dailyIssue.ProjectId AND pMaster.LineId = dailyIssue.LineId AND pMaster.ProjectName = dailyIssue.ProjectName AND pMaster.Passed = 'Y' AND convert(date, pMaster.AestheticAD) = CONVERT(DATE, dailyIssue.AddedDate)) as QcPassed,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId  AND LineId=dailyIssue.LineId AND FailedStation='FUQC'  AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS FunctionalFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId  AND LineId=dailyIssue.LineId AND FailedStation='ASTQC'  AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS AestheticFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId AND   Status='D' AND convert(date, AddedDate) = @fromdate) AS Reworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId AND   Status='P' AND LineId=dailyIssue.LineId AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS ReworkPending,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId AND   Status='W' AND LineId=dailyIssue.LineId AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS Nonreparable,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId  AND LineId=dailyIssue.LineId  AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS TotalFault
+
+
+FROM WCMS.dbo.tblDailyIssuedComponents dailyIssue
+
+join tblProductionLine On dailyIssue.LineId=tblProductionLine.LineId
+WHERE CONVERT(date,dailyIssue.AddedDate) between @fromdate AND  @todate
+GROUP BY dailyIssue.ProjectId, dailyIssue.ProjectName, dailyIssue.LineId,tblProductionLine.LineName, CONVERT(DATE, dailyIssue.AddedDate)
+
+ORDER BY CONVERT(DATE, dailyIssue.AddedDate) ASC
+
+
+end 
+
+IF (@projectId IS NOT  Null  AND @fromdate IS NOT NULL AND @todate IS NOT NULL)
+begin
+SELECT dailyIssue.ProjectId, dailyIssue.ProjectName, dailyIssue.LineId,tblProductionLine.LineName, CONVERT(DATE, dailyIssue.AddedDate) AS Date, COUNT(dailyIssue.Id) AS IssuedInLine,
+(SELECT COUNT(1) FROM WCMS.dbo.tblScrew WHERE CONVERT(DATE, AddedDate) = CONVERT(DATE, dailyIssue.AddedDate) AND ProjectId = dailyIssue.ProjectId AND LineId = dailyIssue.LineId) AS ScrewDone,
+(SELECT COUNT(1) FROM WCMS.dbo.ProductionMaster WHERE CONVERT(DATE, FunctionalAD) = CONVERT(DATE, dailyIssue.AddedDate) AND ProjectId = dailyIssue.ProjectId AND LineId = dailyIssue.LineId) AS TotalQcChecked,
+(SELECT COUNT(1) FROM WCMS.dbo.ProductionMaster pMaster where pMaster.ProjectId = dailyIssue.ProjectId AND pMaster.LineId = dailyIssue.LineId AND pMaster.ProjectName = dailyIssue.ProjectName AND pMaster.Passed = 'Y' AND convert(date, pMaster.AestheticAD) = CONVERT(DATE, dailyIssue.AddedDate)) as QcPassed,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId  AND LineId=dailyIssue.LineId AND FailedStation='FUQC'  AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS FunctionalFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId  AND LineId=dailyIssue.LineId AND FailedStation='ASTQC'  AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS AestheticFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId AND   Status='D' AND convert(date, AddedDate) = @fromdate) AS Reworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId AND   Status='P' AND LineId=dailyIssue.LineId AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS ReworkPending,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId AND   Status='W' AND LineId=dailyIssue.LineId AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS Nonreparable,
+(SELECT COUNT(1) FROM tblRework where ProjectId=dailyIssue.ProjectId  AND LineId=dailyIssue.LineId  AND convert(date, AddedDate) = CONVERT(date,dailyIssue.AddedDate)) AS TotalFault
+
+
+FROM WCMS.dbo.tblDailyIssuedComponents dailyIssue
+
+join tblProductionLine On dailyIssue.LineId=tblProductionLine.LineId
+WHERE CONVERT(date,dailyIssue.AddedDate) between @fromdate AND  @todate AND dailyIssue.ProjectId=@projectId
+GROUP BY dailyIssue.ProjectId, dailyIssue.ProjectName, dailyIssue.LineId,tblProductionLine.LineName, CONVERT(DATE, dailyIssue.AddedDate)
+
+ORDER BY CONVERT(DATE, dailyIssue.AddedDate) ASC
+
+
+end 
+
+
+
+END 
+/////////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpCkdMaster]    Script Date: 3/11/2019 8:53:00 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpCkdMaster]
+  
+    @date nvarchar(50)
+
+	
+AS
+
+
+BEGIN
+
+
+SELECT ck.Model,ck.LineId,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='Y' AND convert(date, AddedDate) = @date) AS SMTPassed ,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='N' AND convert(date, AddedDate) = @date) AS SMTPFailed, 
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='Y' AND convert(date, AddedDate)  = @date) AS MMIPassed,
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='N' AND convert(date, AddedDate)  = @date) AS MMIPFailed, 
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='Y' AND convert(date, AddedDate) = @date) AS SoftwareLoadPassed,
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='N' AND convert(date, AddedDate)  = @date) AS SoftwareLoadPFailed, 
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='Y' AND convert(date, AddedDate)  = @date) AS RfPassed ,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='N' AND convert(date, AddedDate)  = @date) AS RfPFailed 
+
+From tblCkdSmtMaster ck WHERE CONVERT(date,ck.AddedDate)=@date Group By ck.Model,ck.LineId
+
+order by ck.Model 
+END
+
+
+  ///////////////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpCkdMmiReport]    Script Date: 3/11/2019 8:53:23 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[SpCkdMmiReport]
+ @date varchar(50),
+ @model varchar(50)
+
+AS
+BEGIN
+
+IF (@model IS Null)
+BEGIN
+
+SELECT ck.Model,ck.LineId,
+
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='Y' AND convert(date, AddedDate)  = @date) AS MMIPassed,
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='N' AND convert(date, AddedDate)  = @date) AS MMIPFailed 
+
+
+From tblCkdMmiMaster ck WHERE CONVERT(date,ck.AddedDate)=@date  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+END
+
+
+IF (@model IS NOT Null  AND @date IS NOT NULL)
+BEGIN
+SELECT ck.Model,ck.LineId,
+
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='Y' AND convert(date, AddedDate)  = @date) AS MMIPassed,
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='N' AND convert(date, AddedDate)  = @date) AS MMIPFailed
+
+
+From tblCkdMmiMaster ck WHERE CONVERT(date,ck.AddedDate)=@date AND ck.Model=@model  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+
+END
+END
+//////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpCkdReport]    Script Date: 3/11/2019 8:53:53 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[SpCkdReport]
+ @date varchar(50),
+ @model varchar(50)
+
+AS
+BEGIN
+
+IF (@model IS Null)
+BEGIN
+
+SELECT ck.Model,ck.LineId,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='Y' AND convert(date, AddedDate) = @date) AS SMTPassed ,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='N' AND convert(date, AddedDate) = @date) AS SMTPFailed, 
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='Y' AND convert(date, AddedDate)  = @date) AS MMIPassed,
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='N' AND convert(date, AddedDate)  = @date) AS MMIPFailed, 
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='Y' AND convert(date, AddedDate) = @date) AS SoftwareLoadPassed,
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='N' AND convert(date, AddedDate)  = @date) AS SoftwareLoadPFailed, 
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='Y' AND convert(date, AddedDate)  = @date) AS RfPassed ,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='N' AND convert(date, AddedDate)  = @date) AS RfPFailed 
+
+From tblCkdSmtMaster ck WHERE CONVERT(date,ck.AddedDate)=@date  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+END
+
+
+IF (@model IS NOT Null  AND @date IS NOT NULL)
+BEGIN
+SELECT ck.Model,ck.LineId,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='Y' AND convert(date, AddedDate) = @date) AS SMTPassed ,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='N' AND convert(date, AddedDate) = @date) AS SMTPFailed, 
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='Y' AND convert(date, AddedDate)  = @date) AS MMIPassed,
+(Select COUNT(1) From tblCkdMmiMaster Mmi WHERE Mmi.Model=ck.Model AND Mmi.Passed='N' AND convert(date, AddedDate)  = @date) AS MMIPFailed, 
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='Y' AND convert(date, AddedDate) = @date) AS SoftwareLoadPassed,
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='N' AND convert(date, AddedDate)  = @date) AS SoftwareLoadPFailed, 
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='Y' AND convert(date, AddedDate)  = @date) AS RfPassed ,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='N' AND convert(date, AddedDate)  = @date) AS RfPFailed 
+
+From tblCkdSmtMaster ck WHERE CONVERT(date,ck.AddedDate)=@date AND ck.Model=@model  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+
+END
+END
+///////////////////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpCkdRfReport]    Script Date: 3/11/2019 8:54:21 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[SpCkdRfReport]
+ @date varchar(50),
+ @model varchar(50)
+
+AS
+BEGIN
+
+IF (@model IS Null)
+BEGIN
+
+SELECT ck.Model,ck.LineId,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='Y' AND convert(date, AddedDate)  = @date) AS RfPassed ,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='N' AND convert(date, AddedDate)  = @date) AS RfPFailed 
+
+From tblCkdRfMaster ck WHERE CONVERT(date,ck.AddedDate)=@date  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+END
+
+
+IF (@model IS NOT Null  AND @date IS NOT NULL)
+BEGIN
+SELECT ck.Model,ck.LineId,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='Y' AND convert(date, AddedDate)  = @date) AS RfPassed ,
+(Select COUNT(1) From tblCkdRfMaster Rf WHERE Rf.Model=ck.Model AND Rf.Passed='N' AND convert(date, AddedDate)  = @date) AS RfPFailed 
+
+From tblCkdRfMaster ck WHERE CONVERT(date,ck.AddedDate)=@date AND ck.Model=@model  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+
+END
+END
+//////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpCkdSmtReport]    Script Date: 3/11/2019 8:54:50 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[SpCkdSmtReport]
+ @date varchar(50),
+ @model varchar(50)
+
+AS
+BEGIN
+
+IF (@model IS Null)
+BEGIN
+
+SELECT ck.Model,ck.LineId,
+
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='Y' AND convert(date, AddedDate) = @date) AS SMTPassed ,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='N' AND convert(date, AddedDate) = @date) AS SMTPFailed 
+
+
+From tblCkdSmtMaster ck WHERE CONVERT(date,ck.AddedDate)=@date  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+END
+
+
+IF (@model IS NOT Null  AND @date IS NOT NULL)
+BEGIN
+SELECT ck.Model,ck.LineId,
+
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='Y' AND convert(date, AddedDate) = @date) AS SMTPassed ,
+(Select COUNT(1) From tblCkdSmtMaster Smt WHERE Smt.Model=ck.Model AND Smt.Passed='N' AND convert(date, AddedDate) = @date) AS SMTPFailed 
+
+
+From tblCkdSmtMaster ck WHERE CONVERT(date,ck.AddedDate)=@date AND ck.Model=@model  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+
+END
+END
+///////////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpCkdSoftwareLoadReport]    Script Date: 3/11/2019 8:55:12 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[SpCkdSoftwareLoadReport]
+ @date varchar(50),
+ @model varchar(50)
+
+AS
+BEGIN
+
+IF (@model IS Null)
+BEGIN
+
+SELECT ck.Model,ck.LineId,
+
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='Y' AND convert(date, AddedDate) = @date) AS SoftwareLoadPassed,
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='N' AND convert(date, AddedDate)  = @date) AS SoftwareLoadPFailed
+
+
+From tblCkdSoftwareLoadMaster ck WHERE CONVERT(date,ck.AddedDate)=@date  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+END
+
+
+IF (@model IS NOT Null  AND @date IS NOT NULL)
+BEGIN
+SELECT ck.Model,ck.LineId,
+
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='Y' AND convert(date, AddedDate) = @date) AS SoftwareLoadPassed,
+(Select COUNT(1) From tblCkdSoftwareLoadMaster SoftwareLoad WHERE SoftwareLoad.Model=ck.Model AND SoftwareLoad.Passed='N' AND convert(date, AddedDate)  = @date) AS SoftwareLoadPFailed
+
+
+From tblCkdSoftwareLoadMaster ck WHERE CONVERT(date,ck.AddedDate)=@date AND ck.Model=@model  Group By  ck.Model,ck.LineId
+
+Order by ck.LineId 
+
+END
+END
+///////////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpDailyProductionFault]    Script Date: 3/11/2019 8:55:42 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpDailyProductionFault]
+@projectId bigint,
+ @date varchar(50),
+  @dateto varchar(50)
+AS
+
+BEGIN
+
+
+
+if(@projectId IS Null)
+
+BEGIN 
+
+SELECT pmaster.ProjectId,pmaster.ProjectName,pmaster.LineId,pline.LineName,  --COUNT(pmaster.ProductionId)TotalChecked ,
+
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=pmaster.ProjectId AND tbR.LineId=pmaster.LineId AND convert(date, AestheticAD) between @date and @dateto) as TotalChecked,
+
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=pmaster.ProjectId AND tbR.LineId=pmaster.LineId AND tbR.ProjectName=pmaster.ProjectName
+AND tbR.Passed='Y' AND convert(date, AestheticAD) between @date and @dateto) as TotalPassed,
+(SELECT COUNT(1) FROM ProductionMaster where ProjectId=pmaster.ProjectId  AND LineId=pmaster.LineId  AND Passed='N' AND convert(date, AestheticAD) between @date and @dateto) AS Fault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND LineId=pmaster.LineId  AND convert(date, AddedDate) between @date and @dateto) AS TotalFault
+
+FROM  ProductionMaster pmaster 
+
+Join tblProductionLine pline  on pmaster.LineId=pline.LineId 
+WHERE (CONVERT(date,pmaster.AestheticAD)between @date and @dateto) AND MobileCode IS Not Null -- AND LineId=4
+
+GROUP BY pmaster.ProjectId,pmaster.ProjectName,pmaster.LineId,pline.LineName
+ORDER BY pmaster.LineId ASC
+END 
+
+if(@projectId IS NOT Null)
+
+BEGIN 
+
+SELECT pmaster.ProjectId,pmaster.ProjectName,pmaster.LineId,pline.LineName,  --COUNT(pmaster.ProductionId)TotalChecked ,
+
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=pmaster.ProjectId AND tbR.LineId=pmaster.LineId AND convert(date, AestheticAD) between @date and @dateto) as TotalChecked,
+
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=pmaster.ProjectId AND tbR.LineId=pmaster.LineId AND tbR.ProjectName=pmaster.ProjectName
+AND tbR.Passed='Y' AND convert(date, AestheticAD) between @date and @dateto) as TotalPassed,
+(SELECT COUNT(1) FROM ProductionMaster where ProjectId=pmaster.ProjectId  AND LineId=pmaster.LineId  AND Passed='N' AND convert(date, AestheticAD)between @date and @dateto) AS Fault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND LineId=pmaster.LineId  AND convert(date, AddedDate) between @date and @dateto) AS TotalFault
+
+FROM  ProductionMaster pmaster 
+
+Join tblProductionLine pline  on pmaster.LineId=pline.LineId 
+WHERE (CONVERT(date,pmaster.AestheticAD)between @date and @dateto) AND MobileCode IS Not Null AND pmaster.ProjectId=@projectId  -- AND LineId=4
+
+GROUP BY pmaster.ProjectId,pmaster.ProjectName,pmaster.LineId,pline.LineName
+ORDER BY pmaster.LineId ASC
+END 
+
+
+
+
+
+END  
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPGetProductCount]    Script Date: 3/11/2019 8:56:11 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ 
+ 
+ALTER PROCEDURE [dbo].[SPGetProductCount]
+
+@projectId bigint,
+    @date varchar(50)
+ as
+
+ begin
+
+ if @projectId=0 
+ 
+ SELECT ProjectId,ProjectName,ProductionMaster.LineId,l.LineName, DATEPART(HOUR,dateadd(hour, datediff(hour, 0, FinallyPassedTime), 0)) as TimeHour, Count(*)as ProductCount
+FROM ProductionMaster left join tblProductionLine l on l.LineId=ProductionMaster.LineId
+
+where FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59' AND FinallyPassed='Y'
+
+GROUP BY dateadd(hour, datediff(hour, 0, FinallyPassedTime), 0),ProjectId,ProjectName,ProductionMaster.LineId,l.LineName
+ORDER BY dateadd(hour, datediff(hour, 0, FinallyPassedTime), 0);
+
+
+else
+
+ SELECT ProjectId,ProjectName,ProductionMaster.LineId,l.LineName, DATEPART(HOUR,dateadd(hour, datediff(hour, 0, FinallyPassedTime), 0)) as TimeHour, Count(*)as ProductCount
+FROM ProductionMaster left join tblProductionLine l on l.LineId=ProductionMaster.LineId
+
+where FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=@projectId AND FinallyPassed='Y'
+
+GROUP BY dateadd(hour, datediff(hour, 0, FinallyPassedTime), 0),ProjectId,ProjectName,ProductionMaster.LineId,l.LineName
+ORDER BY dateadd(hour, datediff(hour, 0, FinallyPassedTime), 0);
+
+end
+//////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpGlueStationReport]    Script Date: 3/11/2019 8:56:39 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpGlueStationReport]
+
+ @dateFrom varchar(50),
+ @dateTo varchar(50),
+ @project nvarchar(50)
+
+AS
+
+BEGIN
+
+IF (@project IS Not Null  AND @dateFrom IS NOT NULL AND @dateTo IS NOT NULL)
+
+
+begin
+
+SELECT ProjectId, COUNT(Passed) Worked, SUM(CASE WHEN glue.Passed = 'Y' THEN 1 ELSE 0 END) AS QcPass, CONVERT(date, AddedDate) AddedDate,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS QcFail,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE'AND Status='D' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS Reworked,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE'AND Status='P' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS ReworkPending,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE'AND Status='W' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS NonReparable
+FROM [WCMS].[dbo].tblGlueMaster glue
+WHERE  Convert(date,glue.AddedDate) between @dateFrom AND @dateTo AND ProjectId=@project
+GROUP BY glue.ProjectId, CONVERT(date, glue.AddedDate)
+
+
+end 
+
+
+
+IF (@project IS Null  AND @dateFrom IS NOT NULL AND @dateTo IS NOT NULL)
+
+
+begin
+
+SELECT ProjectId, COUNT(Passed) Worked, SUM(CASE WHEN glue.Passed = 'Y' THEN 1 ELSE 0 END) AS QcPass, CONVERT(date, AddedDate) AddedDate,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS QcFail,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE'AND Status='D' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS Reworked,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE'AND Status='P' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS ReworkPending,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=glue.ProjectId AND FailedFrom='GLUE'AND Status='W' AND convert(date, AddedDate) = CONVERT(date, glue.AddedDate)) AS NonReparable
+FROM [WCMS].[dbo].[tblGLUEMaster] glue
+WHERE  Convert(date,glue.AddedDate) between @dateFrom AND @dateTo
+GROUP BY glue.ProjectId, CONVERT(date, glue.AddedDate)
+
+
+end 
+
+
+END
+/////////////////////////////////////////////////////////////
+
+
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpHourlyTargetEfficiency]    Script Date: 3/11/2019 8:57:09 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpHourlyTargetEfficiency]
+    @projectId bigint,
+    @lineId bigint,
+    @date varchar(50)
+	
+	--@toDate datetime
+AS
+BEGIN
+
+IF (@projectId IS  Null)
+
+BEGIN
+select x.*, 
+(SELECT COUNT(1) FROM WCMS.dbo.tblDailyIssuedComponents where ProjectId=x.ProjectId AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59' and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount) IssuedComponent,
+(SELECT COUNT(1) FROM WCMS.dbo.tblScrew where  ProjectId=x.ProjectId AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59' and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount) ScrewDone,
+count(pm1.FinallyPassed) QcPasseds,
+(SELECT HourlyTargetQuantity  FROM tblAssemblyLineSetup where ProjectId=x.ProjectId  AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') AS TargrtedQ,
+
+(SELECT COUNT(ProductionId) FROM ProductionMaster where AestheticAD between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=x.ProjectId AND  
+Passed='Y')as TotalQcPassed,
+(SELECT COUNT(ProductionId) FROM ProductionMaster where AestheticAD between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=x.ProjectId AND  DATEPART(HOUR,dateadd(hour, datediff(hour, 0,AestheticAD), 0))=x.HourCount
+ AND Passed='Y')as QcPassed,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('FUQC') AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') as FunctionalFault,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('ASTQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AestheticFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, FinishedDate), 0))=x.HourCount AND Status IN ('D') AND FinishedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('P') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworkPending
+
+from 
+(
+	select t.HourCount, t.TimeRange,pm.LineId AS IdLine, pm.ProjectId from tblTimeRange t, ProductionMaster pm
+	where  pm.LineId=@lineId AND (t.HourCount>=7 AND t.HourCount<=18)  group by t.HourCount, t.TimeRange, pm.ProjectId,pm.LineId
+)x
+left join ProductionMaster pm1
+on x.HourCount = DATEPART(HOUR,dateadd(hour, datediff(hour, 0, pm1.FinallyPassedTime), 0)) and pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+--where pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+
+--left join tblAssemblyLineSetup tas on pm1.ProjectId=tas.ProjectId
+group by x.HourCount, x.TimeRange, x.ProjectId,x.IdLine, pm1.FinallyPassed ORDER BY  x.HourCount ASC
+END
+
+IF (@projectId IS NOT  Null)
+
+BEGIN 
+select x.*, 
+(SELECT COUNT(1) FROM WCMS.dbo.tblDailyIssuedComponents where ProjectId=x.ProjectId AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59' and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount) IssuedComponent,
+(SELECT COUNT(1) FROM WCMS.dbo.tblScrew where  ProjectId=x.ProjectId AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59' and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount) ScrewDone,
+count(pm1.FinallyPassed) QcPasseds,
+(SELECT HourlyTargetQuantity  FROM tblAssemblyLineSetup where ProjectId=x.ProjectId  AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') AS TargrtedQ,
+
+(SELECT COUNT(ProductionId) FROM ProductionMaster where AestheticAD between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=x.ProjectId AND  
+Passed='Y')as TotalQcPassed,
+(SELECT COUNT(ProductionId) FROM ProductionMaster where AestheticAD between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=x.ProjectId AND  DATEPART(HOUR,dateadd(hour, datediff(hour, 0,AestheticAD), 0))=x.HourCount
+ AND Passed='Y')as QcPassed,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('FUQC') AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') as FunctionalFault,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('ASTQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AestheticFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, FinishedDate), 0))=x.HourCount AND Status IN ('D') AND FinishedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('P') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworkPending
+
+from 
+(
+	select t.HourCount, t.TimeRange,pm.LineId AS IdLine, pm.ProjectId from tblTimeRange t, ProductionMaster pm
+	where pm.ProjectId= @projectId AND pm.LineId=@lineId AND (t.HourCount>=7 AND t.HourCount<=18)  group by t.HourCount, t.TimeRange, pm.ProjectId,pm.LineId
+)x
+left join ProductionMaster pm1
+on x.HourCount = DATEPART(HOUR,dateadd(hour, datediff(hour, 0, pm1.FinallyPassedTime), 0)) and pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+--where pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+
+--left join tblAssemblyLineSetup tas on pm1.ProjectId=tas.ProjectId
+group by x.HourCount, x.TimeRange, x.ProjectId,x.IdLine, pm1.FinallyPassed ORDER BY  x.HourCount ASC
+END
+
+
+
+
+
+
+
+END
+
+//////////////////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpLineWiseHourlyTargetEfficiency]    Script Date: 3/11/2019 8:57:40 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpLineWiseHourlyTargetEfficiency]
+   -- @projectId bigint,
+    @date varchar(50)
+	--@toDate datetime
+AS
+BEGIN
+
+--Declare @projectId int=null
+--Declare @date varchar(50)
+
+--SET @projectId=1
+
+--SET @date='2018-05-14' 
+
+select x.*, COUNT(pm1.FinallyPassed) QcPassed,
+(SELECT HourlyTargetQuantity  FROM tblAssemblyLineSetup where ProjectId=x.ProjectId  AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') AS TargrtedQ,
+
+(SELECT COUNT(ProductionId) FROM ProductionMaster where FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=x.ProjectId AND FinallyPassed='Y')as TotalQcPassed,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('FUQC') AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') as FunctionalFault,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('ASTQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AestheticFault,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('AGQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AgingFault,
+(SELECT COUNT(1) FROM tblRework tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND FailedStation IN ('PKGQC','PACKGAESTHQC','PACKGOQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as PackagingFault,
+(SELECT COUNT(1) FROM tblRework tbR where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('D') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworked,
+(SELECT COUNT(1) FROM tblRework tbR where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('P') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworkPending,
+(SELECT COUNT(1) FROM tblRework tbR where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('W') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalWastages,
+ pl.LineName 
+
+from 
+(
+	select t.HourCount, t.TimeRange, pm.ProjectId,pm.lineId from tblTimeRange t, ProductionMaster pm
+	where --pm.ProjectId= @projectId AND 
+	(t.HourCount>=7 AND t.HourCount<=18)  group by t.HourCount, t.TimeRange, pm.ProjectId,pm.lineId
+)x
+
+left join tblProductionLine pl on pl.LineId=x.LineId
+left join ProductionMaster pm1
+on x.HourCount = DATEPART(HOUR,dateadd(hour, datediff(hour, 0, pm1.FinallyPassedTime), 0)) and pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+--where pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+
+--left join tblAssemblyLineSetup tas on pm1.ProjectId=tas.ProjectId
+group by x.HourCount, x.TimeRange,x.lineId,x.ProjectId, pl.LineName 
+order by x.lineId
+END
+//////////////////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPLineWiseIssueCount]    Script Date: 3/11/2019 8:58:10 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[SPLineWiseIssueCount] 
+@date nvarchar(50),
+@projectId bigint
+
+AS
+
+BEGIN
+
+DECLARE @result nvarchar(max) 
+
+DECLARE @columns NVARCHAR(MAX), @sql NVARCHAR(MAX)--- @dd nvarchar(50);
+
+
+IF (@projectId IS  Null)
+
+BEGIN
+SET @columns = N'';
+--set @dd = '2018-10-17';
+SELECT @columns += N', p.' + QUOTENAME(Line_Project)
+  FROM (
+  select pl.LineName + '-' + convert(nvarchar, tr.ProjectId) as Line_Project
+	from [WCMS].[dbo].[tblRework] tr
+	join tblProductionLine pl
+	on tr.LineId=pl.LineId
+	cross apply (select Data from [WCMS].dbo.Split(tr.Issues,','))x
+	where convert(date, tr.AddedDate) = @date AND pl.LineCriteria='AssemblyLine' --tr.MobileCode = 'MP4400000003589'
+	
+	group by pl.LineName, tr.ProjectId
+
+	
+	 
+  ) AS x;
+
+
+SET @sql = N'
+SELECT IssueName,FailedStation, ' + STUFF(@columns, 1, 2, '') + '
+FROM
+(
+ select pl.LineName' + '+''-''+' + 'convert(nvarchar, tr.ProjectId) as Line_Project, LTRIM(RTRIM(x.Data)) as IssueName,tr.FailedStation as FailedStation, count(x.Data) IssueCount
+	from [WCMS].[dbo].[tblRework] tr
+	join tblProductionLine pl
+	on tr.LineId=pl.LineId
+	cross apply (select Data from [WCMS].dbo.Split(tr.Issues,'+''','''+'))x
+	where convert(date, tr.AddedDate) ='''+@date+''' AND pl.LineCriteria=''AssemblyLine''
+	group by tr.ProjectId , tr.LineId, pl.LineName,x.Data,tr.FailedStation 
+) AS j
+PIVOT
+(
+  SUM(IssueCount) FOR Line_Project IN ('
+  + STUFF(REPLACE(@columns, ', p.[', ',['), 1, 1, '')
+  + ')
+) AS p;';
+
+
+  
+  SET @result=@sql;
+  EXEC(@result);
+
+END
+
+
+IF (@projectId IS NOT  Null)
+
+BEGIN
+
+SET @columns = N'';
+--set @dd = '2018-10-17';
+SELECT @columns += N', p.' + QUOTENAME(Line_Project)
+  FROM (
+  select pl.LineName + '-' + convert(nvarchar, tr.ProjectId) as Line_Project
+	from [WCMS].[dbo].[tblRework] tr
+	join tblProductionLine pl
+	on tr.LineId=pl.LineId
+	cross apply (select Data from [WCMS].dbo.Split(tr.Issues,','))x
+	where convert(date, tr.AddedDate) = @date AND pl.LineCriteria='AssemblyLine' AND tr.ProjectId=@projectId  --tr.MobileCode = 'MP4400000003589'
+	
+	group by pl.LineName, tr.ProjectId
+
+	
+	 
+  ) AS x;
+
+
+SET @sql = N'
+SELECT IssueName,FailedStation, ' + STUFF(@columns, 1, 2, '') + '
+FROM
+(
+ select pl.LineName' + '+''-''+' + 'convert(nvarchar, tr.ProjectId) as Line_Project, LTRIM(RTRIM(x.Data)) as IssueName,tr.FailedStation as FailedStation, count(x.Data) IssueCount
+	from [WCMS].[dbo].[tblRework] tr
+	join tblProductionLine pl
+	on tr.LineId=pl.LineId
+	cross apply (select Data from [WCMS].dbo.Split(tr.Issues,'+''','''+'))x
+	where convert(date, tr.AddedDate) ='''+@date+''' AND pl.LineCriteria=''AssemblyLine''
+	group by tr.ProjectId , tr.LineId, pl.LineName,x.Data,tr.FailedStation 
+) AS j
+PIVOT
+(
+  SUM(IssueCount) FOR Line_Project IN ('
+  + STUFF(REPLACE(@columns, ', p.[', ',['), 1, 1, '')
+  + ')
+) AS p;';
+
+
+  
+  SET @result=@sql;
+  EXEC(@result);
+
+END
+
+
+
+
+
+
+
+
+
+END 
+////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPLineWiseReport]    Script Date: 3/11/2019 8:58:43 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SPLineWiseReport]
+    @LineId bigint,
+    @date varchar(50)
+	--@toDate datetime
+AS
+BEGIN
+
+select x.Id,x.ProjectId, x.LineId, x.SAddedDate, 
+case when x.a = 0 then b else a end ScrewDone,
+x.Pcb, x.FunctionalQc, x.AestheticQc  from
+(
+	SELECT sp.Id, s.ProjectId, s.LineId,CONVERT(date, s.AddedDate) SAddedDate--, s.MobileCode, CONVERT(date, s.AddedDate) SAddedDate, ic.ComponentCode, CONVERT(date, ic.AddedDate) IAddedDate
+,sum(case when (CONVERT(date, s.AddedDate) = CONVERT(date, ic.AddedDate) AND s.ProjectId = ic.ProjectId and s.LineId = ic.LineId) then 1 else 0 end) a,
+sum(case when (CONVERT(date, s.AddedDate) <> CONVERT(date, ic.AddedDate) and s.ProjectId = ic.ProjectId and s.LineId = ic.LineId) then 1 else 0 end) b,
+
+
+(SELECT COUNT(1) FROM tblDailyIssuedComponents where 
+CONVERT(date, AddedDate) = @date and LineId = @LineId and s.ProjectId = ProjectId and
+ CONVERT(date, AddedDate) = CONVERT(date, sp.AddedDate))Pcb ,
+
+--sum(case when (CONVERT(date, mast.FunctionalAD) = CONVERT(date, ic.AddedDate) AND mast.ProjectId = ic.ProjectId and mast.LineId = ic.LineId AND mast.Passed='Y'  AND QcStation IN ('FUQC','ASTQC','AGQC')) then 1 else 0 end) c,
+--sum(case when (CONVERT(date, mast.FunctionalAD) <> CONVERT(date, ic.AddedDate) AND mast.ProjectId = ic.ProjectId and mast.LineId = ic.LineId AND mast.Passed='Y'  AND QcStation IN ('FUQC','ASTQC','AGQC')) then 1 else 0 end) d,
+
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=s.ProjectId 
+AND tbR.LineId=@LineId AND tbR.Passed='Y'  AND QcStation IN ('FUQC','ASTQC','AGQC') 
+AND convert(date,FunctionalAD) = @date) as FunctionalQc,
+
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=s.ProjectId AND tbR.LineId=@LineId AND tbR.Passed='Y'  AND QcStation IN ('ASTQC','AGQC') AND convert(date,AestheticAD) = @date) as AestheticQc
+	 
+	 
+	 FROM tblScrew s
+	 full join tblDailyIssuedComponents ic
+	 on s.MobileCode = ic.ComponentCode
+	 join WCMS.dbo.tblAssemblyLineSetup sp
+	 on sp.ProjectId = ic.ProjectId and CONVERT(date, sp.AddedDate) = CONVERT(date, ic.AddedDate)and sp.AssemblyLineId=ic.LineId --new
+
+	 left join ProductionMaster mast on ic.ComponentCode=mast.MobileCode 
+	  where CONVERT(date, s.AddedDate) = @date and s.LineId =@LineId
+	  group by sp.Id, s.ProjectId, s.LineId, CONVERT(date, s.AddedDate), CONVERT(date, sp.AddedDate)
+)x
+
+
+END
+////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpLineWiseStationsHourlyStatus]    Script Date: 3/11/2019 8:59:07 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpLineWiseStationsHourlyStatus]
+   -- @projectId bigint,
+    @date varchar(50)
+	--@toDate datetime
+AS
+BEGIN
+
+ 
+
+select x.*,
+(SELECT COUNT(1) FROM tblDailyIssuedComponents tblcom where   tblcom.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') as IssuedComponent,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND QcStation IN ('FUQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as FunctionalQc,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND QcStation IN ('ASTQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AestheticQc,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND QcStation IN ('AGQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AgingQc,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND QcStation IN ('PKGQC','PACKGAESTHQC','PACKGOQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as PackagingQc,
+--(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('D') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('P') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworkPending,
+--(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId and DATEPART(HOUR,dateadd(hour, datediff(hour, 0, AddedDate), 0))=x.HourCount AND Status IN ('W') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalWastages,
+ pl.LineName 
+
+from 
+(
+	select t.HourCount, t.TimeRange, pm.ProjectId,pm.lineId as IdLine from tblTimeRange t, ProductionMaster pm
+	where --pm.ProjectId= @projectId AND 
+	(t.HourCount>=7 AND t.HourCount<=18)  group by t.HourCount, t.TimeRange, pm.ProjectId,pm.lineId
+)x
+
+left join tblProductionLine pl on pl.LineId=x.IdLine
+
+--where pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+
+--left join tblAssemblyLineSetup tas on pm1.ProjectId=tas.ProjectId
+group by x.HourCount, x.TimeRange,x.IdLine,x.ProjectId, pl.LineName 
+order by x.IdLine
+END
+////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPOQcStatus]    Script Date: 3/11/2019 9:00:08 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[SPOQcStatus]
+
+ @projectId bigint,
+ @date varchar(50)
+
+
+ AS
+ BEGIN
+
+
+SELECT x.*,y.FaultyhandsetImeiNo,y.Remarks FROM (SELECT CONVERT(date, b.AddedDate)Date, b.BatchNo as BatchNo,COUNT(b.Id)BatchQuantity,SUM(case when b.IsSample='Y' Then 1 else 0 end )SampleQuantity,SUM(case when b.Passed='N' Then 1 else 0 end )TotalFault    
+
+FROM OQcBatchInfo b
+
+WHERE CONVERT(date, b.AddedDate)=@date AND b.projectId=@projectId
+
+GROUP BY  b.BatchNo,CONVERT(date, b.AddedDate))x
+
+join
+
+
+( SELECT BatchNo as BB2, FaultyhandsetImeiNo=Stuff(( SELECT ','+ LTRIM(Imei1) FROM OQcBatchInfo AS EMBN FOR XML PATH('')),1,1,''   ),Remarks=Stuff(( SELECT ','+ LTRIM(Remarks) FROM OQcBatchInfo AS E FOR XML PATH('')),1,1,''   )
+
+ FROM OQcBatchInfo
+
+ WHERE CONVERT(date, AddedDate)=@date AND projectId=@projectId GROUP BY  BatchNo)y
+
+ on x.BatchNo=y.BB2
+
+ END
+
+
+//////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpPackagingLineCount]    Script Date: 3/11/2019 9:00:32 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpPackagingLineCount]
+   -- @projectId bigint,
+    @date varchar(50)
+	
+AS
+BEGIN
+
+
+--pm.ProjectId
+select pm.PackagingLineId, pl.LineName, pm.ProjectName,CAST(pl.LineId as int)as LineId  ,
+
+(SELECT COUNT(1) FROM ProductionMaster p where  p.PackagingLineId=pm.PackagingLineId AND p.ProjectName=pm.ProjectName  AND convert(date, p.PackagingAD) =@date) AS PackagingIssued,
+
+(SELECT COUNT(1) FROM ProductionMaster p where  p.PackagingLineId=pm.PackagingLineId AND p.ProjectName=pm.ProjectName  AND p.Passed='Y' AND convert(date, p.PackagingAstheticAD) =@date) AS PackagingPass,
+--count(1) as PackagingPass,
+(SELECT COUNT(1) FROM tblRework where  FailedStation IN ('PACKGAESTHQC') AND tblRework.LineId=pl.LineId AND tblRework.ProjectId=pm.ProjectId  AND convert(date, AddedDate) =@date) AS PackagingFault
+from ProductionMaster pm 
+join tblProductionLine pl on pm.PackagingLineId = pl.LineId
+
+--where CONVERT(date, PackagingAstheticAD) = @date and pm.FinallyPassed = 'Y' and QcStation IN ('PACKGOQC')
+where CONVERT(date, pm.PackagingAstheticAD) = @date --and (pm.Passed = 'Y')
+group by pm.PackagingLineId, pm.ProjectName,pl.LineName,pl.LineId,pm.ProjectId
+
+
+END
+///////////////////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPPackaginglineProductionStatus]    Script Date: 3/11/2019 9:01:00 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SPPackaginglineProductionStatus]
+ @projectId bigint,
+ @fromdate varchar(50),
+ @todate varchar(50)
+
+AS
+BEGIN
+
+IF (@projectId IS  Null  AND @fromdate IS NOT NULL AND @todate IS NOT NULL)
+begin
+
+SELECT  pmaster.ProjectId,pmaster.ProjectName,CONVERT(date, pmaster.PackagingAD) Date,
+(SELECT COUNT(1) FROM ProductionMaster p where   p.ProjectName=pmaster.ProjectName  AND convert(date, p.PackagingAD) = CONVERT(date, pmaster.PackagingAD)) AS IssuedInLine,
+(SELECT COUNT(1) FROM ProductionMaster p where   p.ProjectName=pmaster.ProjectName  AND p.Passed='Y' AND convert(date, p.PackagingAstheticAD) =CONVERT(date, pmaster.PackagingAD)) AS QcPassed,
+(SELECT COUNT(1) FROM tblRework where  FailedStation IN ('PACKGAESTHQC')  AND tblRework.ProjectId=pmaster.ProjectId  AND convert(date, AddedDate) =CONVERT(date, pmaster.PackagingAD)) AS PackagingFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND   Status='D' AND convert(date, AddedDate) =CONVERT(date, pmaster.PackagingAD)) AS Reworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND   Status='P'  AND convert(date, AddedDate)=CONVERT(date, pmaster.PackagingAD)) AS ReworkPending,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND   Status='W'  AND convert(date, AddedDate)=CONVERT(date, pmaster.PackagingAD)) AS Nonreparable
+
+
+FROM  ProductionMaster pmaster 
+
+
+Join tblProductionLine pline  on pmaster.LineId=pline.LineId 
+WHERE (CONVERT(date,pmaster.PackagingAD)between @fromdate AND @todate) 
+AND MobileCode IS Not Null -- AND LineId=4
+GROUP BY pmaster.ProjectId,pmaster.ProjectName,CONVERT(date, pmaster.PackagingAD)
+
+
+end 
+
+IF (@projectId IS NOT  Null  AND @fromdate IS NOT NULL AND @todate IS NOT NULL)
+
+begin 
+
+SELECT  pmaster.ProjectId,pmaster.ProjectName,CONVERT(date, pmaster.PackagingAD) AddedDate,
+(SELECT COUNT(1) FROM ProductionMaster p where   p.ProjectName=pmaster.ProjectName  AND convert(date, p.PackagingAD) = CONVERT(date, pmaster.PackagingAD)) AS IssuedInLine,
+(SELECT COUNT(1) FROM ProductionMaster p where   p.ProjectName=pmaster.ProjectName  AND p.Passed='Y' AND convert(date, p.PackagingAstheticAD) =CONVERT(date, pmaster.PackagingAD)) AS QcPassed,
+(SELECT COUNT(1) FROM tblRework where  FailedStation IN ('PACKGAESTHQC')  AND tblRework.ProjectId=pmaster.ProjectId  AND convert(date, AddedDate) =CONVERT(date, pmaster.PackagingAD)) AS PackagingFault,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND   Status='D' AND convert(date, AddedDate) =CONVERT(date, pmaster.PackagingAD)) AS Reworked,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND   Status='P'  AND convert(date, AddedDate)=CONVERT(date, pmaster.PackagingAD)) AS ReworkPending,
+(SELECT COUNT(1) FROM tblRework where ProjectId=pmaster.ProjectId  AND   Status='W'  AND convert(date, AddedDate)=CONVERT(date, pmaster.PackagingAD)) AS Nonreparable
+
+
+FROM  ProductionMaster pmaster 
+
+
+Join tblProductionLine pline  on pmaster.LineId=pline.LineId 
+WHERE (CONVERT(date,pmaster.PackagingAD)between @fromdate AND @todate)  AND pmaster.ProjectId=@projectId
+AND MobileCode IS Not Null -- AND LineId=4
+GROUP BY pmaster.ProjectId,pmaster.ProjectName,CONVERT(date, pmaster.PackagingAD)
+end
+END 
+////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpProductionLineCount]    Script Date: 3/11/2019 9:01:35 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpProductionLineCount]
+   -- @projectId bigint,
+    @date varchar(50)
+	
+AS
+BEGIN
+
+SELECT ProductionData.CountProjectId, ProductionData.ProjectName,
+pl.LineName, pl.LineCriteria,  ProductionData.LineId,
+
+(SELECT COUNT(1) FROM tblDailyIssuedComponents tblcom where tblcom.ProjectId = s.ProjectId and tblcom.LineId=s.AssemblyLineId  AND convert(date, AddedDate) =ProductionData.OperationDate ) as IssuedComponent,
+(SELECT COUNT(1) FROM tblScrew tblscrew where tblscrew.ProjectId = ProductionData.CountProjectId and  tblscrew.LineId=s.AssemblyLineId  AND convert(date, AddedDate) = ProductionData.OperationDate) as ScrewDone,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=ProductionData.CountProjectId AND  tbR.LineId=ProductionData.LineId AND ((tbR.Passed='Y') AND convert(date, AestheticAD) =ProductionData.OperationDate)) as AssemblyPassed,
+(SELECT COUNT(1) FROM tblRework where ProjectId=ProductionData.CountProjectId  AND LineId=ProductionData.LineId  AND FailedStation IN ('FUQC','ASTQC') AND convert(date, AddedDate) = ProductionData.OperationDate) AS Fault
+FROM 
+(
+	select * from 
+	(
+		SELECT CAST(pm.ProjectId AS int) AS CountProjectId, pm.ProjectName, CAST( pm.LineId as int)as LineId, OperationDate=@date
+		FROM ProductionMaster pm where (CONVERT(date, FunctionalAD) = @date or CONVERT(date, AestheticAD) = @date) and pm.ProjectId > 0
+		group by pm.ProjectId, pm.ProjectName,pm.LineId
+		union 
+		SELECT ProjectId AS CountProjectId, ProjectName, AssemblyLineId as LinId, OperationDate = @date FROM tblAssemblyLineSetup where CONVERT(date, AddedDate) = @date
+		union 
+		SELECT CAST(ProjectId AS int) AS CountProjectId, ProjectName, CAST(LineId as int)AS LineId , OperationDate = @date FROM tblScrew where CONVERT(date, AddedDate) = @date
+		group by ProjectId, ProjectName, LineId
+	) ud
+	group by ud.CountProjectId, ud.ProjectName, ud.LineId, ud.OperationDate
+) ProductionData
+join
+tblProductionLine pl on ProductionData.LineId = pl.LineId
+left join 
+tblAssemblyLineSetup s on ProductionData.CountProjectId = s.ProjectId and ProductionData.LineId = s.AssemblyLineId and ProductionData.OperationDate = CONVERT(date, s.AddedDate)
+
+
+
+--SELECT CAST(pm.ProjectId AS int) AS CountProjectId, pm.ProjectName, pl.LineName, pl.LineCriteria,  CAST( pm.LineId as int)as LineId ,
+--(SELECT COUNT(1) FROM tblDailyIssuedComponents tblcom where tblcom.ProjectId = pm.ProjectId and tblcom.LineId=pm.LineId  AND convert(date, AddedDate) = @date) as IssuedComponent,
+--(SELECT COUNT(1) FROM tblScrew tblscrew where  tblscrew.ProjectId = pm.ProjectId and  tblscrew.LineId=pm.LineId  AND convert(date, AddedDate) = @date) as ScrewDone,
+--(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=pm.ProjectId AND  tbR.LineId=pm.LineId AND ((tbR.Passed='Y') AND convert(date, AestheticAD) = @date)) as AssemblyPassed,
+--(SELECT COUNT(1) FROM tblRework where ProjectId=pm.ProjectId  AND LineId=pm.LineId  AND FailedStation IN ('FUQC','ASTQC') AND convert(date, AddedDate) = @date) AS Fault
+--FROM ProductionMaster pm 
+--JOIN tblProductionLine pl
+--on pm.LineId = pl.LineId
+--where (CONVERT(date, pm.AddedDate) = @date or CONVERT(date, FunctionalAD) = @date or CONVERT(date, AestheticAD) = @date) and pm.ProjectId > 0
+--group by pm.ProjectId, pm.ProjectName,pm.LineId, pl.LineName, pl.LineCriteria
+--order by pm.LineId
+END
+
+////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SPRepairAndSolderingInfo]    Script Date: 3/11/2019 9:02:20 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER procedure [dbo].[SPRepairAndSolderingInfo] 
+@fromdate nvarchar(50),
+@todate nvarchar(50),
+@projectId bigint
+
+AS
+BEGIN
+
+DECLARE @cols AS NVARCHAR(MAX),
+    @query  AS NVARCHAR(MAX);
+	IF (@projectId IS  Null)
+	BEGIN
+	create table temp
+(     
+    Item varchar(300),   
+	Total int,
+	Dates nvarchar(20)
+)
+
+insert INTO temp(Item,Total,Dates) 
+
+SELECT X.UsedComponents,SUM(X.Total) AS Total,CONVERT(date, X.Date) AS Dates
+from
+(
+	SELECT tblRework.ProjectId ,tblRepairComponents.UsedComponents,tblRepairComponents.BomId,COUNT(UsedQuantity)Total,tblRepairComponents.AddedDate Date 
+	 FROM tblRepairComponents
+
+	LEFT JOIN tblRework on tblRepairComponents.ReworkId=tblRework.ReworkId
+
+	WHERE Convert(date,tblRepairComponents.AddedDate) BETWEEN @fromdate AND @todate
+	GROUP BY  tblRepairComponents.UsedComponents,tblRepairComponents.AddedDate,BomId,tblRework.ProjectId
+	
+) X
+GROUP BY X.ProjectId ,X.UsedComponents,X.BomId,CONVERT(date, X.Date)
+ORDER BY CONVERT(date, X.Date)  ASC
+
+
+
+SET @cols = STUFF((SELECT distinct ',' + QUOTENAME(convert (date,c.Dates)) 
+            FROM temp c
+            FOR XML PATH(''), TYPE
+            ).value('.', 'NVARCHAR(MAX)') 
+        ,1,1,'')
+
+set @query = 'SELECT Item, ' + @cols + ' from 
+            (
+                select 
+				    Item
+                    , Total
+                    , Convert(date,Dates) Dates
+                from temp
+           ) x
+            pivot 
+            (
+                 max(Total)
+                for Dates in (' + @cols + ')
+            ) p '
+execute(@query)
+--SELECT * FROM  temp
+drop table temp
+	 
+	END
+
+
+	IF (@projectId IS NOT  Null)
+
+	BEGIN
+	create table temp
+(   
+   
+    Item varchar(300),
+   
+	Total int,
+	Dates nvarchar(20)
+)
+
+insert INTO temp(Item,Total,Dates) 
+
+SELECT X.UsedComponents,SUM(X.Total) AS Total,CONVERT(date, X.Date) AS Dates
+from
+(
+	SELECT tblRework.ProjectId ,tblRepairComponents.UsedComponents,tblRepairComponents.BomId,COUNT(UsedQuantity)Total,tblRepairComponents.AddedDate Date 
+	 FROM tblRepairComponents
+
+	LEFT JOIN tblRework on tblRepairComponents.ReworkId=tblRework.ReworkId
+
+	WHERE Convert(date,tblRepairComponents.AddedDate) BETWEEN  @fromdate AND @todate AND tblRework.ProjectId=@projectId
+	GROUP BY  tblRepairComponents.UsedComponents,tblRepairComponents.AddedDate,BomId,tblRework.ProjectId
+	
+) X
+GROUP BY X.ProjectId ,X.UsedComponents,X.BomId,CONVERT(date, X.Date)
+ORDER BY CONVERT(date, X.Date)  ASC
+
+
+
+SET @cols = STUFF((SELECT distinct ',' + QUOTENAME(convert (date,c.Dates)) 
+            FROM temp c
+            FOR XML PATH(''), TYPE
+            ).value('.', 'NVARCHAR(MAX)') 
+        ,1,1,'')
+
+set @query = 'SELECT Item, ' + @cols + ' from 
+            (
+                select 
+				    Item
+                    , Total
+                    , Convert(date,Dates) Dates
+                from temp
+           ) x
+            pivot 
+            (
+                 max(Total)
+                for Dates in (' + @cols + ')
+            ) p '
+execute(@query)
+--SELECT * FROM  temp
+drop table temp
+	 
+	END
+
+
+
+
+END 
+////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpTpLcdReport]    Script Date: 3/11/2019 9:02:43 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[SpTpLcdReport]
+
+ @dateFrom varchar(50),
+ @dateTo varchar(50),
+ @project varchar(50)
+
+AS
+
+BEGIN
+
+IF (@project IS Null  AND @dateFrom IS NOT NULL AND @dateTo IS NOT NULL)
+
+BEGIN
+
+
+SELECT lcd.ProjectId,lcd.ProjectName,lcd.AddedBy,COUNT(ProjectId) As Passed, lg.EmployeeName,
+(SELECT  COUNT(1) FROM tblLcdGlueRework where FailedFrom IN ('TPLCD')AND tblLcdGlueRework.ProjectId=lcd.ProjectId   AND convert(date, AddedDate)   BETWEEN @dateFrom AND  @dateTo )
+ AS Fault,
+ (SELECT  COUNT(1) FROM tblLcdGlueRework where FailedFrom IN ('TPLCD')AND tblLcdGlueRework.ProjectId=lcd.ProjectId   AND convert(date, AddedDate)   BETWEEN @dateFrom AND  @dateTo )
+ AS Fault
+from tblTpLcdMaster lcd
+LEFT JOIN tblLogin lg ON lcd.AddedBy=lg.Id
+Where  convert(date, lcd.AddedDate)  BETWEEN @dateFrom AND  @dateTo AND lcd.Passed='Y'  GROUP BY lcd.ProjectId,lcd.ProjectName,lcd.AddedBy,lg.EmployeeName
+
+END 
+
+
+IF (@project IS NOT Null  AND @dateFrom IS NOT NULL AND @dateTo IS NOT NULL)
+
+BEGIN
+SELECT lcd.ProjectId,lcd.ProjectName,lcd.AddedBy,COUNT(ProjectId) As Passed, lg.EmployeeName,
+(SELECT  COUNT(1) FROM tblLcdGlueRework where FailedFrom IN ('TPLCD')AND tblLcdGlueRework.ProjectId=lcd.ProjectId  AND convert(date, AddedDate)   BETWEEN @dateFrom AND  @dateTo   )
+ AS Fault
+from tblTpLcdMaster lcd
+LEFT JOIN tblLogin lg ON lcd.AddedBy=lg.Id
+Where  convert(date, lcd.AddedDate) BETWEEN @dateFrom AND  @dateTo AND lcd.ProjectId=@project AND lcd.Passed='Y'  GROUP BY lcd.ProjectId,lcd.ProjectName,lcd.AddedBy,lg.EmployeeName
+END
+
+END
+///////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[SpTp-LcdReport]    Script Date: 3/11/2019 9:03:12 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[SpTp-LcdReport]
+    @projectId bigint,
+    @fromDate varchar(50),
+	@toDate varchar(50)
+	
+	--@toDate datetime
+AS
+BEGIN
+
+IF (@projectId IS Not Null  AND @fromDate IS NOT NULL AND @toDate IS NOT NULL)
+
+
+begin
+
+SELECT ProjectId, COUNT(Passed) Worked, SUM(CASE WHEN tlm.Passed = 'Y' THEN 1 ELSE 0 END) AS QcPass, CONVERT(date, AddedDate) AddedDate,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS QcFail,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD'AND Status='D' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS Reworked,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD'AND Status='P' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS ReworkPending,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD'AND Status='W' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS NonReparable
+FROM [WCMS].[dbo].[tblTpLcdMaster] tlm
+WHERE  Convert(date,tlm.AddedDate) between @fromDate AND @toDate AND ProjectId=@projectId
+GROUP BY tlm.ProjectId, CONVERT(date, tlm.AddedDate)
+
+
+end 
+
+
+
+IF (@projectId IS Null  AND @fromDate IS NOT NULL AND @toDate IS NOT NULL)
+
+
+begin
+
+SELECT ProjectId, COUNT(Passed) Worked, SUM(CASE WHEN tlm.Passed = 'Y' THEN 1 ELSE 0 END) AS QcPass, CONVERT(date, AddedDate) AddedDate,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS QcFail,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD'AND Status='D' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS Reworked,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD'AND Status='P' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS ReworkPending,
+(SELECT COUNT(1) FROM WCMS.dbo.tblLcdGlueRework where ProjectId=tlm.ProjectId AND FailedFrom='TPLCD'AND Status='W' AND convert(date, AddedDate) = CONVERT(date, tlm.AddedDate)) AS NonReparable
+FROM [WCMS].[dbo].[tblTpLcdMaster] tlm
+WHERE  Convert(date,tlm.AddedDate) between @fromDate AND @toDate
+GROUP BY tlm.ProjectId, CONVERT(date, tlm.AddedDate)
+
+
+end 
+
+
+
+END
+//////////////////////////////////////////////////////////////////
+USE [WCMS]
+GO
+/****** Object:  StoredProcedure [dbo].[Testo]    Script Date: 3/11/2019 9:03:29 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[Testo]
+   -- @projectId bigint,
+    @date varchar(50)
+	
+AS
+BEGIN
+
+
+
+select x.*, 
+
+
+--(SELECT COUNT(ProductionId) FROM ProductionMaster where FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59' AND ProjectId=x.ProjectId AND FinallyPassed='Y')as TotalQcPassed,
+(SELECT COUNT(1) FROM tblDailyIssuedComponents tblcom where   tblcom.ProjectId=x.ProjectId  AND AddedDate between @date+' 00:00:00' and @date+' 23:59:59') as IssuedComponent,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId  AND QcStation IN ('FUQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as FunctionalQc,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId  AND QcStation IN ('ASTQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AestheticQc,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId  AND QcStation IN ('AGQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as AgingQc,
+(SELECT COUNT(1) FROM ProductionMaster tbR where   tbR.ProjectId=x.ProjectId  AND QcStation IN ('PKGQC','PACKGAESTHQC','PACKGOQC') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') as PackagingQc,
+
+(SELECT COUNT(1) FROM tblRework where ProjectId=x.ProjectId  AND Status IN ('P') AND AddedDate  between @date+' 00:00:00' and @date+' 23:59:59') AS TotalReworkPending,
+
+ x.ProjectName,pl.LineName 
+
+from 
+(
+	select pm.ProjectId,pm.ProjectName,pm.lineId from tblTimeRange t, ProductionMaster pm
+	
+)x
+
+left join tblProductionLine pl on pl.LineId=x.LineId
+left join ProductionMaster pm1
+on x.ProjectId=pm1.ProjectId and pm1.FinallyPassedTime between @date+' 00:00:00' and @date+' 23:59:59'
+group by x.lineId,x.ProjectId, pl.LineName , x.ProjectName
+order by x.lineId
+END
